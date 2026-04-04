@@ -1,0 +1,110 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum AccountType {
+  BASIC
+  GROUP
+  QUICK_GROUP
+  QUICK_ACCOUNT
+}
+
+enum AccountStatus {
+  OPEN
+  CLOSED
+}
+
+enum FinalState {
+  BALANCED
+  SUPPRESSED_WARNING
+  OUTLIER
+}
+
+enum ThresholdType {
+  PERCENTAGE
+  FIXED
+}
+
+enum TransactionSource {
+  MANUAL
+  SCALE_CAMERA
+}
+
+model Account {
+  id   String      @id @default(uuid()) @db.Uuid
+  name String
+  type AccountType
+
+  parentAccountId String?  @db.Uuid
+  parentAccount   Account? @relation("AccountHierarchy", fields: [parentAccountId], references: [id])
+  children        Account[] @relation("AccountHierarchy")
+
+  lossThresholdType    ThresholdType?
+  lossThresholdValue   Decimal?
+  excessThresholdType  ThresholdType?
+  excessThresholdValue Decimal?
+
+  status     AccountStatus @default(OPEN)
+  finalState FinalState?
+
+  cachedNetDifference Decimal?
+
+  outgoingTransactions Transaction[] @relation("FromAccountTransactions")
+  incomingTransactions Transaction[] @relation("ToAccountTransactions")
+
+  outlierData OutlierData? @relation("AccountOutlier")
+
+  createdAt DateTime  @default(now())
+  closedAt  DateTime?
+
+  @@index([parentAccountId])
+  @@index([status])
+  @@index([type])
+}
+
+model Transaction {
+  id    String  @id @default(uuid()) @db.Uuid
+  title String
+  weight Decimal
+  karat  Int
+
+  timestamp DateTime @default(now())
+
+  fromAccountId String?  @db.Uuid
+  fromAccount   Account? @relation("FromAccountTransactions", fields: [fromAccountId], references: [id])
+
+  toAccountId String?  @db.Uuid
+  toAccount   Account? @relation("ToAccountTransactions", fields: [toAccountId], references: [id])
+
+  source      TransactionSource
+  numOfPieces Int?
+
+  isVoided   Boolean @default(false)
+  voidReason String?
+
+  @@index([fromAccountId])
+  @@index([toAccountId])
+  @@index([timestamp])
+  @@index([isVoided])
+}
+
+model OutlierData {
+  id String @id @default(uuid()) @db.Uuid
+
+  accountId String  @unique @db.Uuid
+  account   Account @relation("AccountOutlier", fields: [accountId], references: [id])
+
+  expectedNetDifference Decimal
+  explanation          String
+
+  createdAt DateTime @default(now())
+}
