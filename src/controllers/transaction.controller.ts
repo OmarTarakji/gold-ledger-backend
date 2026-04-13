@@ -17,6 +17,7 @@ const validationErrorMessages = new Set([
   "Transaction not found.",
   "Transaction is already voided.",
   "Transactions cannot be made directly on group accounts",
+  "Must specify quick account when sending from quick group",
 ]);
 
 function isValidationError(err: unknown): err is Error {

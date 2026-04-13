@@ -4,7 +4,10 @@ import { prisma } from "../config/prisma";
 import {
   calculateGroupNetDifferenceWithClient,
   calculateNetDifference,
+  calculateQuickGroupNetDifferenceWithClient,
+  evaluateQuickAccountStatusWithClient,
   evaluateThresholdWithClient,
+  validatePieceBalanceWithClient,
 } from "./ledger.service";
 
 export type CloseAccountOptions = {
@@ -77,20 +80,67 @@ export async function closeAccount(
       return updatedGroupAccount;
     }
 
-    const [netDifferenceNumber, thresholdEvaluation] = await Promise.all([
-      calculateNetDifference(accountId, tx),
-      evaluateThresholdWithClient(accountId, tx),
-    ]);
+    if (account.type === "QUICK_GROUP") {
+      const children = await tx.account.findMany({
+        where: {
+          parentAccountId: accountId,
+        },
+        select: {
+          id: true,
+          status: true,
+          type: true,
+        },
+      });
+
+      const openChildren = children.filter((c) => c.status === "OPEN");
+      const evaluations = await Promise.all(
+        openChildren.map((c) => evaluateQuickAccountStatusWithClient(c.id, tx)),
+      );
+
+      const hasInvalidOpenChild = evaluations.some((e) => e.status === "OPEN");
+      if (hasInvalidOpenChild) {
+        throw new Error(
+          "Cannot close quick group account while child accounts are still open",
+        );
+      }
+
+      const total = new Prisma.Decimal(
+        await calculateQuickGroupNetDifferenceWithClient(accountId, tx),
+      );
+
+      const updatedQuickGroupAccount = await tx.account.update({
+        where: { id: accountId },
+        data: {
+          status: "CLOSED",
+          finalState: null,
+          cachedNetDifference: total,
+          closedAt: new Date(),
+        },
+      });
+
+      return updatedQuickGroupAccount;
+    }
+
+    const [netDifferenceNumber, thresholdEvaluation, pieceBalance] =
+      await Promise.all([
+        calculateNetDifference(accountId, tx),
+        evaluateThresholdWithClient(accountId, tx),
+        account.type === "QUICK_ACCOUNT"
+          ? validatePieceBalanceWithClient(accountId, tx)
+          : Promise.resolve({ valid: true } as const),
+      ]);
 
     const netDifference = new Prisma.Decimal(netDifferenceNumber);
 
     let finalState: FinalState;
 
     const isBalanced = netDifferenceNumber === 0;
-    if (isBalanced) {
+    const isValid = thresholdEvaluation.valid && pieceBalance.valid;
+
+    if (isBalanced && isValid) {
       finalState = "BALANCED";
     } else {
-      if (thresholdEvaluation.valid) {
+      if (isValid) {
         finalState = "BALANCED";
       } else {
         const suppressWarning = options?.suppressWarning === true;

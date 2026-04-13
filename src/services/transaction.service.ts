@@ -6,6 +6,7 @@ export type CreateTransactionInput = {
   weight: number;
   karat: number;
   fromAccountId?: string;
+  quickAccountId?: string;
   toAccountId?: string;
   source: TransactionSource;
   numOfPieces?: number;
@@ -36,48 +37,93 @@ export async function createTransaction(input: CreateTransactionInput) {
     throw new Error("karat must be a positive integer.");
   }
 
-  const [fromAccount, toAccount] = await Promise.all([
-    input.fromAccountId
-      ? prisma.account.findUnique({
-          where: { id: input.fromAccountId },
-          select: { status: true, type: true },
-        })
-      : Promise.resolve(null),
-    input.toAccountId
-      ? prisma.account.findUnique({
-          where: { id: input.toAccountId },
-          select: { status: true, type: true },
-        })
-      : Promise.resolve(null),
-  ]);
+  return prisma.$transaction(async (tx) => {
+    const [fromAccount, toAccount] = await Promise.all([
+      input.fromAccountId
+        ? tx.account.findUnique({
+            where: { id: input.fromAccountId },
+            select: { status: true, type: true },
+          })
+        : Promise.resolve(null),
+      input.toAccountId
+        ? tx.account.findUnique({
+            where: { id: input.toAccountId },
+            select: { status: true, type: true },
+          })
+        : Promise.resolve(null),
+    ]);
 
-  if (fromAccount?.status === "CLOSED") {
-    throw new Error("Cannot use closed account as source");
-  }
+    if (fromAccount?.status === "CLOSED") {
+      throw new Error("Cannot use closed account as source");
+    }
 
-  if (toAccount?.status === "CLOSED") {
-    throw new Error("Cannot use closed account as destination");
-  }
+    if (toAccount?.status === "CLOSED") {
+      throw new Error("Cannot use closed account as destination");
+    }
 
-  if (fromAccount?.type === "GROUP" || toAccount?.type === "GROUP") {
-    throw new Error("Transactions cannot be made directly on group accounts");
-  }
+    if (fromAccount?.type === "GROUP" || toAccount?.type === "GROUP") {
+      throw new Error("Transactions cannot be made directly on group accounts");
+    }
 
-  const created = await prisma.transaction.create({
-    data: {
-      title: input.title,
-      weight: new Prisma.Decimal(input.weight),
-      karat: input.karat,
+    let fromAccountId = input.fromAccountId;
 
-      fromAccountId: input.fromAccountId,
-      toAccountId: input.toAccountId,
+    if (fromAccountId && fromAccount?.type === "QUICK_GROUP") {
+      if (!input.quickAccountId) {
+        throw new Error(
+          "Must specify quick account when sending from quick group",
+        );
+      }
 
-      source: input.source,
-      numOfPieces: input.numOfPieces,
-    },
+      const quickAccount = await tx.account.findUnique({
+        where: { id: input.quickAccountId },
+        select: { id: true, status: true, type: true, parentAccountId: true },
+      });
+
+      if (
+        !quickAccount ||
+        quickAccount.status !== "OPEN" ||
+        quickAccount.type !== "QUICK_ACCOUNT" ||
+        quickAccount.parentAccountId !== fromAccountId
+      ) {
+        throw new Error(
+          "Must specify quick account when sending from quick group",
+        );
+      }
+
+      fromAccountId = quickAccount.id;
+    }
+
+    let toAccountId = input.toAccountId;
+
+    if (toAccountId && toAccount?.type === "QUICK_GROUP") {
+      const quickAccount = await tx.account.create({
+        data: {
+          name: input.title,
+          type: "QUICK_ACCOUNT",
+          parentAccountId: toAccountId,
+        },
+        select: { id: true },
+      });
+
+      toAccountId = quickAccount.id;
+    }
+
+    const created = await tx.transaction.create({
+      data: {
+        title: input.title,
+        weight: new Prisma.Decimal(input.weight),
+        karat: input.karat,
+
+        fromAccountId,
+        toAccountId,
+
+        source: input.source,
+        numOfPieces: input.numOfPieces,
+      },
+    });
+
+    return created;
   });
-
-  return created;
 }
 
 export async function voidTransaction(transactionId: string, reason: string) {

@@ -18,6 +18,9 @@ const validationErrorMessages = new Set([
   "Account does not have a closedAt timestamp.",
   "Account can only be reopened within 48 hours of closing.",
   "Cannot close group account while child accounts are still open",
+  "Cannot close quick group account while child accounts are still open",
+  "Threshold configuration missing for account and no parent to inherit from",
+  "Threshold configuration must define both loss and excess thresholds",
 ]);
 
 function isValidationError(err: unknown): err is Error {
